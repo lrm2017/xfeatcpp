@@ -5,8 +5,27 @@ project(xfeatcpp)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# 设置编译选项
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -Wall -Wextra")
+# 设置编译选项 - 根据构建类型设置优化级别
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g -Wall -Wextra")
+    message(STATUS "Debug模式: 无优化 (-O0), 包含调试符号 (-g)")
+elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -DNDEBUG -Wall -Wextra")
+    message(STATUS "Release模式: 最高优化 (-O3), 无调试符号")
+else()
+    # 默认情况
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O2 -Wall -Wextra")
+    message(STATUS "默认模式: 中等优化 (-O2)")
+endif()
+
+# 查找OpenMP
+find_package(OpenMP REQUIRED)
+if(OpenMP_CXX_FOUND)
+    message(STATUS "Found OpenMP: ${OpenMP_CXX_VERSION}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+else()
+    message(FATAL_ERROR "OpenMP not found. Please install OpenMP: sudo apt-get install libomp-dev")
+endif()
 
 # 查找OpenCV - 优先使用系统版本（避免版本冲突）
 if(DEFINED ENV{OPENCV_ROOT_DIR} AND NOT USE_SYSTEM_OPENCV)
@@ -137,7 +156,6 @@ set(SOURCES
     src/ort_run.cpp
     src/feat_extractor.cpp
     src/matcher.cpp
-    src/main.cpp
     src/xfeat.cpp
     src/lighterGlue.cpp
 )
@@ -149,22 +167,53 @@ set(HEADERS
     include/matcher.h
     include/xfeat.h
     include/lighterGlue.h
+    DVPCamera/Demo/DVPCamera.h
 )
 
 # 创建可执行文件
-add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+add_executable(${PROJECT_NAME} 
+    src/main.cpp ${SOURCES} ${HEADERS})
+
+# 创建实时匹配可执行文件的源文件（排除main.cpp避免重复定义）
+set(REALTIME_SOURCES
+    src/ort_run.cpp
+    src/feat_extractor.cpp
+    src/matcher.cpp
+    src/xfeat.cpp
+    src/lighterGlue.cpp
+    src/realtime_matching.cpp
+)
+
+# 创建实时匹配可执行文件
+add_executable(realtime_matching ${REALTIME_SOURCES} ${HEADERS})
 
 # 链接库
 target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS})
+target_link_libraries(${PROJECT_NAME} ${CMAKE_SOURCE_DIR}/DVPCamera/libdvp.so)
+target_link_libraries(${PROJECT_NAME} ${CMAKE_SOURCE_DIR}/DVPCamera/libhzd.so)
 target_link_libraries(${PROJECT_NAME} Eigen3::Eigen)
+target_link_libraries(${PROJECT_NAME} OpenMP::OpenMP_CXX)
 if(ONNXRUNTIME_LIBRARIES)
     target_link_libraries(${PROJECT_NAME} ${ONNXRUNTIME_LIBRARIES})
     # 添加ONNX Runtime的依赖库
     target_link_libraries(${PROJECT_NAME} pthread)
 endif()
 
+# 为实时匹配程序链接库
+target_link_libraries(realtime_matching ${OpenCV_LIBS})
+target_link_libraries(realtime_matching Eigen3::Eigen)
+target_link_libraries(realtime_matching OpenMP::OpenMP_CXX)
+if(ONNXRUNTIME_LIBRARIES)
+    target_link_libraries(realtime_matching ${ONNXRUNTIME_LIBRARIES})
+    target_link_libraries(realtime_matching pthread)
+endif()
+
 # 设置输出目录
 set_target_properties(${PROJECT_NAME} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+set_target_properties(realtime_matching PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 

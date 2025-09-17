@@ -225,8 +225,10 @@ int main(int argc, char* argv[]) {
             lighterglue_model_path = arg;
         }
         // 检查是否是图像文件
-        else if (arg.find(".png") != std::string::npos || arg.find(".jpg") != std::string::npos || 
-                 arg.find(".jpeg") != std::string::npos) {
+        else if (arg.find(".png") != std::string::npos 
+            || (arg.find(".bmp") != std::string::npos 
+            || arg.find(".jpg") != std::string::npos 
+            || arg.find(".jpeg") != std::string::npos)) {
             if (image1_path.empty()) {
                 image1_path = arg;
             } else if (image2_path.empty()) {
@@ -373,8 +375,12 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Failed to validate points" << std::endl;
                 return -1;
             }
+            start_time = std::chrono::high_resolution_clock::now();
             cv::Mat mask;
             cv::Mat H = cv::findHomography(valid_ref, valid_dst, cv::RANSAC, 3.5, mask, 1000, 0.999);
+            end_time = std::chrono::high_resolution_clock::now();
+            duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "RANSAC time: " << duration.count() << " ms" << std::endl;
             if (H.empty()) {
                 std::cerr << "Failed to find homography" << std::endl;
                 // return -1;
@@ -388,22 +394,6 @@ int main(int argc, char* argv[]) {
                 std::cout << "valid_dst: " << valid_dst.size() << std::endl;
             }
         
-            // // 绘制匹配
-            // drawMatches(image1, image2, valid_ref, valid_dst, matches, "Feature Matching Result");
-            // 准备关键点和匹配用于drawMatches函数
-            // keypoints1.clear();
-            // keypoints2.clear();
-            // for (const auto& pt : valid_ref) {
-            //     keypoints1.push_back(cv::Point2f(pt.x, pt.y));
-            // }
-            // for (const auto& pt : valid_dst) {
-            //     keypoints2.push_back(cv::Point2f(pt.x, pt.y));
-            // }
-            
-            // // 使用RANSAC筛选后的点进行匹配
-            // cv::Mat ransac_mask;
-            // cv::Mat H_ransac = cv::findHomography(valid_ref, valid_dst, cv::RANSAC, 3.5, ransac_mask, 1000, 0.999);
-            
             if (!H.empty() && !mask.empty()) {
                 std::vector<cv::DMatch> inlier_matches;
                 std::vector<cv::Point2f> inlier_pts1, inlier_pts2;

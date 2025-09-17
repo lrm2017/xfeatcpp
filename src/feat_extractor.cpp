@@ -208,8 +208,8 @@ bool FeatExtractor::postprocessFeatures(const std::vector<Ort::Value>& data,
             // // 将归一化坐标转换回图像坐标
             // x = x * current_image_.cols;
             // y = y * current_image_.rows;
-            if( i< 10)
-                std::cout << "x: " << x << ", y: " << y << std::endl;
+            // if( i< 10)
+            //     std::cout << "x: " << x << ", y: " << y << std::endl;
             
             keypoints.emplace_back(x, y);
         }
@@ -234,11 +234,11 @@ bool FeatExtractor::postprocessFeatures(const std::vector<Ort::Value>& data,
                   << desc_dim << " dimensional descriptors" << std::endl;
         
         // 调试信息：打印前几个描述符值
-        std::cout << "First descriptor values: ";
-        for (int i = 0; i < std::min(5, desc_dim); i++) {
-            std::cout << descriptors.at<float>(0, i) << " ";
-        }
-        std::cout << std::endl;
+        // std::cout << "First descriptor values: ";
+        // for (int i = 0; i < std::min(5, desc_dim); i++) {
+        //     std::cout << descriptors.at<float>(0, i) << " ";
+        // }
+        // std::cout << std::endl;
         
         return true;
     } catch (const std::exception& e) {

@@ -93,6 +93,9 @@ bool OrtRun::loadModel() {
             std::cout << std::endl;
         }
         
+        // 注意：上面显示的是模型静态形状定义，实际运行时输出形状可能不同
+        std::cout << "注意：上面显示的是模型静态形状定义，实际运行时输出形状可能不同" << std::endl;
+        
         return true;
     } catch (const std::exception& e) {
         std::cerr << "Error loading model: " << e.what() << std::endl;

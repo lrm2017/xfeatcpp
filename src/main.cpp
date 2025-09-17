@@ -6,10 +6,30 @@
 #include <iostream>
 #include <string>
 #include <xfeat.h>
-#include <eigen3/Eigen/Dense>
+#include <Eigen/Dense>
+#include <cstdlib>
 
-// OpenCV Mat 转 Eigen Matrix 的辅助函数
+// OpenCV Mat 转 Eigen Matrix 的辅助函数 - 正确处理数据布局
 Eigen::MatrixXf cvMatToEigen(const cv::Mat& cv_mat) {
+    cv::Mat cvMat = cv_mat.clone();
+    // 确保矩阵连续且数据类型匹配
+    if (!cvMat.isContinuous()) cvMat = cvMat.clone();
+    
+    // 根据数据类型转换
+    if (cvMat.type() == CV_64F) {
+        return Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(
+            (double*)cvMat.data, 
+            cvMat.rows, 
+            cvMat.cols
+        ).cast<float>();
+    } else if (cvMat.type() == CV_32F) {
+        return Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>>(
+            (float*)cvMat.data, 
+            cvMat.rows, 
+            cvMat.cols
+        );
+    }
+    // 确保矩阵连续且数据类型匹配
     Eigen::MatrixXf eigen_mat(cv_mat.rows, cv_mat.cols);
     for (int i = 0; i < cv_mat.rows; i++) {
         for (int j = 0; j < cv_mat.cols; j++) {
@@ -32,77 +52,49 @@ cv::Mat eigenToCvMat(const Eigen::MatrixXf& eigen_mat) {
 
 // 双向匹配 - 使用Eigen库简化矩阵操作
 void bidirectionalMatch(const cv::Mat& descriptors1, const cv::Mat& descriptors2, std::vector<cv::DMatch>& matches, float min_cossim=0.82f) {
+
+    
     // 转换为Eigen矩阵
     Eigen::MatrixXf desc1 = cvMatToEigen(descriptors1);
     Eigen::MatrixXf desc2 = cvMatToEigen(descriptors2);
+    // cv::Mat cv_cossim = descriptors1 * descriptors2.t(); // cv矩阵运算速度很慢
     
-    // 计算余弦相似度矩阵 - 就像Python一样简单！
-    Eigen::MatrixXf cossim = desc1 * desc2.transpose();
-    Eigen::MatrixXf cossim_t = desc2 * desc1.transpose();
+    // 计算余弦相似度矩阵 - 只需要一个矩阵！
+    Eigen::MatrixXf cossim = desc1 * desc2.transpose(); //cvMatToEigen(cv_cossim);//
     
-    // 找出每行的最大值和索引 - 一行代码搞定！
+    // 找出每行的最大值和索引
     Eigen::VectorXf row_max_values = cossim.rowwise().maxCoeff();
     Eigen::VectorXi row_max_indices(cossim.rows());
     
-    // 找出每行最大值的索引
+    // 找出每列的最大值索引（用于双向一致性检查）
+    Eigen::VectorXi col_max_indices(cossim.cols());
+    
+    #pragma omp parallel for
     for (int i = 0; i < cossim.rows(); i++) {
         cossim.row(i).maxCoeff(&row_max_indices(i));
-        if( i<5)
-            std::cout <<"indx" << i << ":" << row_max_indices(i) << std::endl;
+        // if( i<5)
+        //     std::cout <<"row_max_indx" << i << ":" << row_max_indices(i) << std::endl;
     }
     
-    // 对转置矩阵也做同样处理
-    Eigen::VectorXf row_max_values_t = cossim_t.rowwise().maxCoeff();
-    Eigen::VectorXi row_max_indices_t(cossim_t.rows());
-    
-    for (int i = 0; i < cossim_t.rows(); i++) {
-        cossim_t.row(i).maxCoeff(&row_max_indices_t(i));
-        if( i<5)
-            std::cout <<"indx" << i << ":" << row_max_indices_t(i) << std::endl;
+    #pragma omp parallel for
+    for (int j = 0; j < cossim.cols(); j++) {
+        cossim.col(j).maxCoeff(&col_max_indices(j));
+        // if( j<5)
+        //     std::cout <<"col_max_indx" << j << ":" << col_max_indices(j) << std::endl;
     }
 
-    // 双向一致性检查 - 完全按照Python版本实现，使用Eigen优化
-    // 使用Eigen生成递增序列 [0, 1, 2, ...] - 一行代码搞定！
-    std::vector<int> idx0;
-    std::vector<int> idx1;  // 对应Python的idx1
+    matches.clear();
     
-    // 双向一致性检查：match21[match12] == idx0
-    Eigen::VectorXi mutual(cossim.rows());
+    #pragma omp parallel for
     for (int i = 0; i < cossim.rows(); i++) {
         int j = row_max_indices(i);
-        if (j < cossim_t.rows()) {
-            mutual(i) = (row_max_indices_t(j) == i);
-        } else {
-            mutual(i) = 0;
-        }
-    }
-    
-    // 根据min_cossim阈值过滤
-    if (min_cossim > 0) {
-        // 找出满足双向一致性和相似度阈值的匹配
-        Eigen::VectorXi good = (row_max_values.array() > min_cossim).cast<int>();
-        Eigen::VectorXi valid = mutual.array() * good.array();
-        
-        for (int i = 0; i < cossim.rows(); i++) {
-            if (valid(i)) {
-                idx0.push_back(i);
-                idx1.push_back(row_max_indices(i));
+        bool isvalid = (row_max_values(i) > min_cossim);
+        // 检查：点(i,j)既是第i行的最大值，也是第j列的最大值
+        if (j < cossim.cols() && col_max_indices(j) == i && isvalid) {
+            #pragma omp critical
+            {
+                matches.push_back(cv::DMatch(i, j, row_max_values(i)));
             }
-        }
-    } else {
-        // 只检查双向一致性
-        for (int i = 0; i < cossim.rows(); i++) {
-            if (mutual(i)) {
-                idx0.push_back(i);
-                idx1.push_back(row_max_indices(i));
-            }
-        }
-    }
-
-    for (size_t i = 0; i < idx0.size(); i++) {
-        // 确保索引在有效范围内
-        if (idx0[i] < cossim.rows() && idx1[i] < cossim.cols()) {
-            matches.push_back(cv::DMatch(idx0[i], idx1[i], row_max_values(idx0[i])));
         }
     }
     
@@ -218,19 +210,43 @@ int main(int argc, char* argv[]) {
     std::string image2_path;
     std::string xfeat_model_path;
     std::string lighterglue_model_path;
-    // 如果输入了图片路径
-    if (argc > 1) {
-        image1_path = argv[1];
+    float min_score = 0.82f;
+    
+    // 智能解析命令行参数
+    for (int i = 1; i < argc; i++) {
+        std::string arg = argv[i];
+        
+        // 检查是否是XFeat模型文件
+        if (arg.find("xfeat") != std::string::npos && arg.find(".onnx") != std::string::npos) {
+            xfeat_model_path = arg;
+        }
+        // 检查是否是LightGlue模型文件
+        else if (arg.find("lighterglue") != std::string::npos && arg.find(".onnx") != std::string::npos) {
+            lighterglue_model_path = arg;
+        }
+        // 检查是否是图像文件
+        else if (arg.find(".png") != std::string::npos || arg.find(".jpg") != std::string::npos || 
+                 arg.find(".jpeg") != std::string::npos) {
+            if (image1_path.empty()) {
+                image1_path = arg;
+            } else if (image2_path.empty()) {
+                image2_path = arg;
+            }
+        }
+        // 检查是否是数值（阈值）
+        else if (std::isdigit(arg[0]) || (arg[0] == '-' && std::isdigit(arg[1]))) {
+            min_score = atof(arg.c_str());
+        }
     }
-    if (argc > 2) {
-        image2_path = argv[2];
-    }
-    if (argc > 3) {
-        xfeat_model_path = argv[3];
-    }
-    if (argc > 4) {
-        lighterglue_model_path = argv[4];
-    }
+    
+    // 打印解析结果
+    std::cout << "\n=== 命令行参数解析结果 ===" << std::endl;
+    std::cout << "图像1: " << (image1_path.empty() ? "未指定" : image1_path) << std::endl;
+    std::cout << "图像2: " << (image2_path.empty() ? "未指定" : image2_path) << std::endl;
+    std::cout << "XFeat模型: " << (xfeat_model_path.empty() ? "未指定" : xfeat_model_path) << std::endl;
+    std::cout << "LightGlue模型: " << (lighterglue_model_path.empty() ? "未指定" : lighterglue_model_path) << std::endl;
+    std::cout << "匹配阈值: " << min_score << std::endl;
+    std::cout << "=========================" << std::endl;
     // 否则使用默认的
     if (image1_path.empty()) {
         // image1_path = "assets/move0.png";
@@ -242,11 +258,11 @@ int main(int argc, char* argv[]) {
     }
     if (xfeat_model_path.empty()) {
         // xfeat_model_path = "onnx/xfeat_2048_2048x3072.onnx";
-        xfeat_model_path = "onnx/xfeat_dense_2048_2048x3072.onnx";
+        xfeat_model_path = "onnx/xfeat_2048_2048x3072.onnx";
     }
-    if (lighterglue_model_path.empty()) {
-        lighterglue_model_path = "onnx/lighterglue_2048_L3.onnx";
-    }
+    // if (lighterglue_model_path.empty()) {
+    //     lighterglue_model_path = "onnx/lighterglue_2048_L3.onnx";
+    // }
 
     // 图像路径
     // std::string image1_path = "assets/move0.png";    
@@ -278,10 +294,6 @@ int main(int argc, char* argv[]) {
         cv::resize(image1, resized_img1, extractor.getInputWH());
         cv::resize(image2, resized_img2, extractor.getInputWH());
         
-        // 创建匹配器 (注释掉LighterGlue匹配器)
-        std::cout << "\n=== 创建匹配器 ===" << std::endl;
-        Matcher lighterglue_matcher(lighterglue_model_path, "lighterglue", true, 0.82f, extractor.getInputWH());  // 设置很低的阈值，保留所有匹配
-        // LighterGlue lighterglue_matcher(lighterglue_model_path);
 
         // 提取特征
         std::cout << "\n=== 提取图像1特征 ===" << std::endl;
@@ -316,101 +328,106 @@ int main(int argc, char* argv[]) {
         std::vector<cv::DMatch> matches;
         std::vector<float> scores;
 
-#if 0
+        if(!lighterglue_model_path.empty()){
+            // 创建匹配器 (注释掉LighterGlue匹配器)
+            std::cout << "\n=== 创建匹配器 ===" << std::endl;
+            Matcher lighterglue_matcher(lighterglue_model_path, "lighterglue", true, min_score, extractor.getInputWH());  // 设置很低的阈值，保留所有匹配
+            // LighterGlue lighterglue_matcher(lighterglue_model_path);
 
-        //使用真实关键点进行匹配
-        if (!lighterglue_matcher.run(keypoints1, keypoints2, descriptors1, descriptors2, matches, scores)) {
-            std::cerr << "Failed to run LighterGlue matching" << std::endl;
-            return -1;
-        }
-        //运行时间
-        start_time = std::chrono::high_resolution_clock::now();
-        lighterglue_matcher.run(keypoints1, keypoints2, descriptors1, descriptors2, matches, scores);
-        end_time = std::chrono::high_resolution_clock::now();
-        duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        std::cout << "LighterGlue matching time: " << duration.count() << " ms" << std::endl;
-
-        drawMatches(resized_img1, resized_img2, keypoints1, keypoints2, matches, "All Matches");
-#else
-        // 运行时间
-        start_time = std::chrono::high_resolution_clock::now();
-        bidirectionalMatch(descriptors1, descriptors2, matches, 0.82);
-        end_time = std::chrono::high_resolution_clock::now();
-        duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        std::cout << "Bidirectional matching time: " << duration.count() << " ms" << std::endl;
-        std::vector<cv::Point2f> valid_ref, valid_dst;
-        std::cout << "Matches: " << matches.size() << std::endl;
-
-        // 筛选出匹配点的坐标
-        std::vector<cv::Point2f> pts1, pts2;
-        for (const auto& match : matches) {
-            pts1.push_back(keypoints1[match.queryIdx]);
-            pts2.push_back(keypoints2[match.trainIdx]);
-            // std::cout << "Match: " << keypoints1[match.queryIdx] << " " << keypoints2[match.trainIdx] << std::endl;
-        }
-
-        int ret = validatePoints(pts1, pts2, valid_ref, valid_dst);
-        std::cout << "valid_ref: " << valid_ref.size() << std::endl;
-        std::cout << "valid_dst: " << valid_dst.size() << std::endl;
-        if (ret < 0) {
-            std::cerr << "Failed to validate points" << std::endl;
-            return -1;
-        }
-        cv::Mat mask;
-        cv::Mat H = cv::findHomography(valid_ref, valid_dst, cv::RANSAC, 3.5, mask, 1000, 0.999);
-        if (H.empty()) {
-            std::cerr << "Failed to find homography" << std::endl;
-            // return -1;
-        }
-        else {        
-            std::cout << "H: " << H << std::endl;
-            // 行列式
-            double det = cv::determinant(H(cv::Rect(0, 0, 2, 2)));
-            std::cout << "行列式: " << det << std::endl;
-            std::cout << "valid_ref: " << valid_ref.size() << std::endl;
-            std::cout << "valid_dst: " << valid_dst.size() << std::endl;
-        }
-    
-        // // 绘制匹配
-        // drawMatches(image1, image2, valid_ref, valid_dst, matches, "Feature Matching Result");
-        // 准备关键点和匹配用于drawMatches函数
-        // keypoints1.clear();
-        // keypoints2.clear();
-        // for (const auto& pt : valid_ref) {
-        //     keypoints1.push_back(cv::Point2f(pt.x, pt.y));
-        // }
-        // for (const auto& pt : valid_dst) {
-        //     keypoints2.push_back(cv::Point2f(pt.x, pt.y));
-        // }
-        
-        // // 使用RANSAC筛选后的点进行匹配
-        // cv::Mat ransac_mask;
-        // cv::Mat H_ransac = cv::findHomography(valid_ref, valid_dst, cv::RANSAC, 3.5, ransac_mask, 1000, 0.999);
-        
-        if (!H.empty() && !mask.empty()) {
-            std::vector<cv::DMatch> inlier_matches;
-            std::vector<cv::Point2f> inlier_pts1, inlier_pts2;
-            
-            // 筛选RANSAC内点
-            for (int i = 0; i < static_cast<int>(matches.size()) && i < mask.rows; ++i) {
-                if (mask.at<uchar>(i)) {
-                    inlier_matches.push_back(matches[i]);
-                    inlier_pts1.push_back(keypoints1[matches[i].queryIdx]);
-                    inlier_pts2.push_back(keypoints2[matches[i].trainIdx]);
-                }
+            //使用真实关键点进行匹配
+            if (!lighterglue_matcher.run(keypoints1, keypoints2, descriptors1, descriptors2, matches, scores)) {
+                std::cerr << "Failed to run LighterGlue matching" << std::endl;
+                return -1;
             }
-            
-            std::cout << "RANSAC筛选后的内点数量: " << inlier_matches.size() << std::endl;
-            
-            // 绘制RANSAC筛选后的匹配
-            drawMatches(resized_img1, resized_img2, keypoints1, keypoints2, inlier_matches, "RANSAC Filtered Matches");
-        } else 
-        {
-            std::cout << "RANSAC失败，绘制所有匹配点" << std::endl;
-            // 如果RANSAC失败，绘制所有匹配点
+            //运行时间
+            start_time = std::chrono::high_resolution_clock::now();
+            lighterglue_matcher.run(keypoints1, keypoints2, descriptors1, descriptors2, matches, scores);
+            end_time = std::chrono::high_resolution_clock::now();
+            duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "LighterGlue matching time: " << duration.count() << " ms" << std::endl;
+
             drawMatches(resized_img1, resized_img2, keypoints1, keypoints2, matches, "All Matches");
         }
-#endif
+        else{
+            // 运行时间
+            start_time = std::chrono::high_resolution_clock::now();
+            bidirectionalMatch(descriptors1, descriptors2, matches, min_score);
+            end_time = std::chrono::high_resolution_clock::now();
+            duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            std::cout << "Bidirectional matching time: " << duration.count() << " ms" << std::endl;
+            std::vector<cv::Point2f> valid_ref, valid_dst;
+            std::cout << "Matches: " << matches.size() << std::endl;
+
+            // 筛选出匹配点的坐标
+            std::vector<cv::Point2f> pts1, pts2;
+            for (const auto& match : matches) {
+                pts1.push_back(keypoints1[match.queryIdx]);
+                pts2.push_back(keypoints2[match.trainIdx]);
+                // std::cout << "Match: " << keypoints1[match.queryIdx] << " " << keypoints2[match.trainIdx] << std::endl;
+            }
+
+            int ret = validatePoints(pts1, pts2, valid_ref, valid_dst);
+            std::cout << "valid_ref: " << valid_ref.size() << std::endl;
+            std::cout << "valid_dst: " << valid_dst.size() << std::endl;
+            if (ret < 0) {
+                std::cerr << "Failed to validate points" << std::endl;
+                return -1;
+            }
+            cv::Mat mask;
+            cv::Mat H = cv::findHomography(valid_ref, valid_dst, cv::RANSAC, 3.5, mask, 1000, 0.999);
+            if (H.empty()) {
+                std::cerr << "Failed to find homography" << std::endl;
+                // return -1;
+            }
+            else {        
+                std::cout << "H: " << H << std::endl;
+                // 行列式
+                double det = cv::determinant(H(cv::Rect(0, 0, 2, 2)));
+                std::cout << "行列式: " << det << std::endl;
+                std::cout << "valid_ref: " << valid_ref.size() << std::endl;
+                std::cout << "valid_dst: " << valid_dst.size() << std::endl;
+            }
+        
+            // // 绘制匹配
+            // drawMatches(image1, image2, valid_ref, valid_dst, matches, "Feature Matching Result");
+            // 准备关键点和匹配用于drawMatches函数
+            // keypoints1.clear();
+            // keypoints2.clear();
+            // for (const auto& pt : valid_ref) {
+            //     keypoints1.push_back(cv::Point2f(pt.x, pt.y));
+            // }
+            // for (const auto& pt : valid_dst) {
+            //     keypoints2.push_back(cv::Point2f(pt.x, pt.y));
+            // }
+            
+            // // 使用RANSAC筛选后的点进行匹配
+            // cv::Mat ransac_mask;
+            // cv::Mat H_ransac = cv::findHomography(valid_ref, valid_dst, cv::RANSAC, 3.5, ransac_mask, 1000, 0.999);
+            
+            if (!H.empty() && !mask.empty()) {
+                std::vector<cv::DMatch> inlier_matches;
+                std::vector<cv::Point2f> inlier_pts1, inlier_pts2;
+                
+                // 筛选RANSAC内点
+                for (int i = 0; i < static_cast<int>(matches.size()) && i < mask.rows; ++i) {
+                    if (mask.at<uchar>(i)) {
+                        inlier_matches.push_back(matches[i]);
+                        inlier_pts1.push_back(keypoints1[matches[i].queryIdx]);
+                        inlier_pts2.push_back(keypoints2[matches[i].trainIdx]);
+                    }
+                }
+                
+                std::cout << "RANSAC筛选后的内点数量: " << inlier_matches.size() << std::endl;
+                
+                // 绘制RANSAC筛选后的匹配
+                drawMatches(resized_img1, resized_img2, keypoints1, keypoints2, inlier_matches, "RANSAC Filtered Matches");
+            } else 
+            {
+                std::cout << "RANSAC失败，绘制所有匹配点" << std::endl;
+                // 如果RANSAC失败，绘制所有匹配点
+                drawMatches(resized_img1, resized_img2, keypoints1, keypoints2, matches, "All Matches");
+            }
+        }
 
 
         // matchWithXFeat(descriptors1, descriptors2, matches, 0.82f);

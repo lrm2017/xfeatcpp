@@ -146,6 +146,7 @@ endif()
 # 包含头文件目录
 include_directories(${OpenCV_INCLUDE_DIRS})
 include_directories(${CMAKE_SOURCE_DIR}/include)
+include_directories(${CMAKE_SOURCE_DIR}/DVPCamera/Demo)
 include_directories(${EIGEN3_INCLUDE_DIR})
 if(ONNXRUNTIME_INCLUDE_DIRS)
     include_directories(${ONNXRUNTIME_INCLUDE_DIRS})
@@ -184,8 +185,21 @@ set(REALTIME_SOURCES
     src/realtime_matching.cpp
 )
 
+# 创建混合摄像头实时匹配的源文件
+set(HYBRID_SOURCES
+    src/ort_run.cpp
+    src/feat_extractor.cpp
+    src/matcher.cpp
+    src/xfeat.cpp
+    src/lighterGlue.cpp
+    src/hybrid_realtime_matching.cpp
+)
+
 # 创建实时匹配可执行文件
 add_executable(realtime_matching ${REALTIME_SOURCES} ${HEADERS})
+
+# 创建混合摄像头实时匹配可执行文件
+add_executable(hybrid_realtime_matching ${HYBRID_SOURCES} ${HEADERS})
 
 # 链接库
 target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS})
@@ -208,12 +222,27 @@ if(ONNXRUNTIME_LIBRARIES)
     target_link_libraries(realtime_matching pthread)
 endif()
 
+# 为混合摄像头实时匹配程序链接库
+target_link_libraries(hybrid_realtime_matching ${OpenCV_LIBS})
+target_link_libraries(hybrid_realtime_matching ${CMAKE_SOURCE_DIR}/DVPCamera/libdvp.so)
+target_link_libraries(hybrid_realtime_matching ${CMAKE_SOURCE_DIR}/DVPCamera/libhzd.so)
+target_link_libraries(hybrid_realtime_matching Eigen3::Eigen)
+target_link_libraries(hybrid_realtime_matching OpenMP::OpenMP_CXX)
+if(ONNXRUNTIME_LIBRARIES)
+    target_link_libraries(hybrid_realtime_matching ${ONNXRUNTIME_LIBRARIES})
+    target_link_libraries(hybrid_realtime_matching pthread)
+endif()
+
 # 设置输出目录
 set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
 set_target_properties(realtime_matching PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+set_target_properties(hybrid_realtime_matching PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
